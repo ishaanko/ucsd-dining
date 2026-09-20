@@ -1,5 +1,7 @@
-"""MCP server for UCSD dining menus. The CLI calls the same tool functions."""
+"""MCP server for UCSD dining menus."""
 
+import argparse
+import asyncio
 import json
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -8,14 +10,15 @@ from typing import Literal
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import store
+from . import geo, store
 
 INSTRUCTIONS = """\
 Menus, prices, nutrition, and allergens for UCSD HDH dining halls, from hdh-web.ucsd.edu.
 Menus exist for today and the next 6 days (Pacific time). Start with search_items for
 questions about food ("high protein vegan dinner", "what has no dairy at Pines"). Use
-list_venues for hours and locations, get_menu to browse one venue, get_item for full
-nutrition and ingredients. Items are a la carte; prices are in USD.
+list_venues for hours, locations, and walking times, get_menu to browse one venue, get_item for full
+nutrition and ingredients. When the user says where they are, pass it as "near" to get
+real walking times. Items are a la carte; prices are in USD.
 Allergen data comes from HDH icons. It can be incomplete. For a serious allergy, tell the
 user to confirm with dining staff."""
 
@@ -25,7 +28,9 @@ Diet = Literal["vegan", "vegetarian"]
 Allergen = Literal[
     "dairy", "eggs", "fish", "gluten", "peanuts", "sesame", "shellfish", "soy", "tree nuts", "wheat"
 ]
-SortBy = Literal["protein", "calories", "price", "protein_per_dollar", "protein_per_calorie"]
+SortBy = Literal[
+    "protein", "calories", "price", "protein_per_dollar", "protein_per_calorie", "walk_time"
+]
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
@@ -59,16 +64,29 @@ def _find_venues(db: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
     return found
 
 
-def _is_open(hours: str, now: datetime) -> bool:
+def _minutes_until_close(hours: str, now: datetime) -> int | None:
+    """Minutes until closing time, or None when the venue is not open at this time."""
     if " - " not in hours:
-        return False
+        return None
     start, end = (datetime.strptime(t, "%I:%M %p").time() for t in hours.split(" - "))
-    return start <= now.time() < end
+    if not start <= now.time() < end:
+        return None
+    return (end.hour - now.hour) * 60 + end.minute - now.minute
+
+
+async def _walks(db: sqlite3.Connection, near: str | None) -> tuple[geo.Place, dict[str, geo.Walk]] | None:
+    if not near:
+        return None
+    try:
+        place = await geo.locate(db, near)
+    except geo.PlaceNotFound as error:
+        raise ToolError(str(error)) from None
+    return place, await geo.walks_from(db, place)
 
 
 def _load(db: sqlite3.Connection, day: date, venue_ids: list[str] | None, meal: str | None) -> list[dict]:
     """Servings for one day, joined with item data. One dict per menu line."""
-    sql = """SELECT s.meal, s.station, s.category, s.price, v.name AS venue, i.*
+    sql = """SELECT s.venue_id, s.meal, s.station, s.category, s.price, v.name AS venue, i.*
              FROM servings s JOIN items i ON i.id = s.item_id JOIN venues v ON v.id = s.venue_id
              WHERE s.date = ?"""
     args: list[str] = [day.isoformat()]
@@ -135,16 +153,21 @@ def _no_menu_note(day: date) -> str:
 
 
 @mcp.tool()
-async def list_venues(date: str = "today") -> list[dict]:
-    """List all UCSD dining halls with campus area, hours for the date, and meals served.
+async def list_venues(date: str = "today", near: str | None = None) -> list[dict]:
+    """List all UCSD dining halls with campus area, hours, meals served, and walking times.
 
     date: "today", "tomorrow", a weekday name, or YYYY-MM-DD.
-    open_now is given only when the date is today. meals is empty when HDH has no menu
-    for that day.
+    near: where the user is. A campus place name ("Geisel Library", "Warren Lecture Hall",
+    "muir") or "lat,lon". Adds walk_minutes and walk_meters (real paths, from
+    OpenStreetMap) and sorts the nearest venue first. near_matched shows the place found.
+    open_now and minutes_until_close are given only when the date is today. Compare
+    minutes_until_close with walk_minutes to know if the user can arrive in time.
+    meals is empty when HDH has no menu for that day.
     """
     day = _parse_date(date)
     db = store.connect()
     await store.ensure_fresh(db, [day])
+    walks = await _walks(db, near)
     now = datetime.now(store.PACIFIC)
     meals: dict[str, list[str]] = {}
     for row in db.execute(
@@ -163,8 +186,20 @@ async def list_venues(date: str = "today") -> list[dict]:
             "description": v["description"],
         }
         if day == now.date():
-            entry["open_now"] = _is_open(hours, now)
+            closes_in = _minutes_until_close(hours, now)
+            entry["open_now"] = closes_in is not None
+            if closes_in is not None:
+                entry["minutes_until_close"] = closes_in
+        if walks and v["id"] in walks[1]:
+            walk = walks[1][v["id"]]
+            entry |= {
+                "walk_minutes": round(walk.minutes),
+                "walk_meters": round(walk.meters),
+                "near_matched": walks[0].label,
+            }
         out.append(entry)
+    if walks:
+        out.sort(key=lambda e: e.get("walk_minutes", float("inf")))
     return out
 
 
@@ -206,6 +241,8 @@ async def search_items(
     max_calories: int | None = None,
     min_protein_g: float | None = None,
     max_price: float | None = None,
+    near: str | None = None,
+    max_walk_minutes: float | None = None,
     sort_by: SortBy = "protein",
     limit: int = 25,
 ) -> dict:
@@ -216,7 +253,9 @@ async def search_items(
     venue: name or campus area, partial match ("pines", "muir"). Omit to search all venues.
     diet: "vegetarian" includes vegan items.
     exclude_allergens: drop items that HDH marks with any of these allergens.
-    sort_by: "protein" (high first), "calories" (low first), "price" (low first),
+    near: where the user is. A campus place name ("Geisel Library", "muir") or "lat,lon".
+    Adds walk_minutes to each result. Necessary for max_walk_minutes and sort_by "walk_time".
+    sort_by: "walk_time" (near first), "protein" (high first), "calories" (low first), "price" (low first),
     "protein_per_dollar", or "protein_per_calorie" (high first).
     Each result lists the venue, station, and meals where the item is served.
     Many results are sides and add-ons; use query, min_protein_g, or max_calories to narrow.
@@ -225,6 +264,9 @@ async def search_items(
     db = store.connect()
     await store.ensure_fresh(db, [day])
     venue_ids = [v["id"] for v in _find_venues(db, venue)] if venue else None
+    walks = await _walks(db, near)
+    if walks is None and (max_walk_minutes is not None or sort_by == "walk_time"):
+        raise ToolError('Give "near" (where the user is) to use max_walk_minutes or sort_by "walk_time".')
     words = query.lower().split()
     wanted_diet = {"vegan"} if diet == "vegan" else {"vegan", "vegetarian"}
 
@@ -239,18 +281,23 @@ async def search_items(
             or (max_calories is not None and (row["calories"] is None or row["calories"] > max_calories))
             or (min_protein_g is not None and (row["protein_g"] or 0) < min_protein_g)
             or (max_price is not None and (row["price"] is None or row["price"] > max_price))
+            or (max_walk_minutes is not None and walks and walks[1][row["venue_id"]].minutes > max_walk_minutes)
         ):
             continue
         entry = merged.setdefault(
             (row["id"], row["venue"]),
             _brief(row) | {"venue": row["venue"], "station": row["station"], "meals": []},
         )
+        if walks:
+            entry["walk_minutes"] = round(walks[1][row["venue_id"]].minutes)
         if row["meal"] not in entry["meals"]:
             entry["meals"].append(row["meal"])
 
     def rank(item: dict) -> float:
         protein = item.get("protein_g", 0)
         match sort_by:
+            case "walk_time":
+                return item["walk_minutes"] - protein / 1000  # protein breaks ties
             case "calories":
                 return item.get("calories", float("inf"))
             case "price":
@@ -264,6 +311,8 @@ async def search_items(
 
     results = sorted(merged.values(), key=rank)
     out: dict = {"date": day.isoformat(), "total_matches": len(results), "items": results[:limit]}
+    if walks:
+        out["near_matched"] = walks[0].label
     if not results and not _load(db, day, venue_ids, meal):
         out["note"] = _no_menu_note(day)
     return out
@@ -293,3 +342,19 @@ async def get_item(item_id: int) -> dict:
         )
     ]
     return item
+
+
+def main() -> None:
+    """Entry point. Default: MCP server on stdio. --http: streamable HTTP. --refresh: fill the cache."""
+    parser = argparse.ArgumentParser(prog="ucsd-dining")
+    parser.add_argument("--http", action="store_true", help="serve streamable HTTP at /mcp")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--refresh", action="store_true", help="fetch all 7 days, then exit")
+    args = parser.parse_args()
+    if args.refresh:
+        asyncio.run(store.ensure_fresh(store.connect(), store.week(), force=True))
+    elif args.http:
+        mcp.run("streamable-http", host=args.host, port=args.port)
+    else:
+        mcp.run("stdio")

@@ -1,12 +1,12 @@
 """Tool tests against a seeded SQLite cache. No network."""
 
 import asyncio
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from ucsd_dining import scrape, server, store
+from ucsd_dining import geo, scrape, server, store
 
 
 @pytest.fixture(autouse=True)
@@ -71,3 +71,23 @@ def test_parse_date(monkeypatch):
     assert server._parse_date("fri") == date(2026, 9, 25)
     with pytest.raises(ToolError):
         server._parse_date("next year")
+
+
+def test_near_adds_walk_times_and_filters(monkeypatch):
+    async def fake_walks(db, place):
+        return {"01": geo.Walk(minutes=4.4, meters=350), "64": geo.Walk(minutes=15, meters=1100)}
+
+    monkeypatch.setattr(geo, "walks_from", fake_walks)
+    # "lat,lon" needs no place lookup, so there is no network call.
+    result = asyncio.run(server.search_items(near="32.8790,-117.2425", sort_by="walk_time"))
+    assert result["items"][0]["walk_minutes"] == 4
+    assert names(asyncio.run(server.search_items(near="32.8790,-117.2425", max_walk_minutes=3))) == []
+    with pytest.raises(ToolError, match="near"):
+        asyncio.run(server.search_items(sort_by="walk_time"))
+
+
+def test_minutes_until_close():
+    at = lambda h, m: datetime(2026, 9, 19, h, m)  # noqa: E731
+    assert server._minutes_until_close("8:00 AM - 9:00 PM", at(19, 38)) == 82
+    assert server._minutes_until_close("8:00 AM - 9:00 PM", at(21, 0)) is None
+    assert server._minutes_until_close("Closed", at(12, 0)) is None
