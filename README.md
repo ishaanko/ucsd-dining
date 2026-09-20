@@ -77,7 +77,7 @@ Vercel instances lose `/tmp` when they stop. `api/seed.db` gives each new instan
 
 ## Data notes
 
-- HDH data has errors. When an item has a vegan or vegetarian tag and also a fish, shellfish, dairy, or egg allergen tag, the diet tag is removed. When the macros of an item do not agree with its calories, the item gets a `warning` field.
+- HDH data has errors. When an item has a vegan or vegetarian tag and also a fish, shellfish, dairy, or egg allergen tag, the diet tag is removed. The diet tag is also removed when the item name has a meat word ("Blackened Chicken") and no plant-based word ("Beyond Beef", "Veggie Sausage"). When the macros of an item do not agree with its calories, the item gets a `warning` field.
 - Allergen tags can be incomplete. For a serious allergy, confirm with dining staff.
 - Campus areas and venue coordinates are not on the HDH site. They are small tables in `scrape.py` and `geo.py`. The coordinates come from OpenStreetMap.
 - The scraper sends a maximum of 6 requests at the same time and identifies itself in the User-Agent.

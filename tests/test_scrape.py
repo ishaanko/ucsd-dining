@@ -43,7 +43,17 @@ def test_allergen_tag_wins_over_diet_tag():
     row = HTMLParser(
         '<div><img title="Vegan"><img title="Contains Fish"><img title="Contains TreeNuts"></div>'
     ).css_first("div")
-    assert scrape._parse_tags(row) == ([], ["fish", "tree nuts"])
+    assert scrape._parse_tags(row, "Seared Salad") == ([], ["fish", "tree nuts"])
+
+
+def test_meat_name_wins_over_diet_tag():
+    row = HTMLParser('<div><img title="Vegan"></div>').css_first("div")
+    assert scrape._parse_tags(row, "Blackened Chicken") == ([], [])
+    assert scrape._parse_tags(row, "Southwest Grain Bowl With Chicken") == ([], [])
+    # Plant-based items keep the tag.
+    assert scrape._parse_tags(row, "Beyond Beef Picadillo Tacos") == (["vegan"], [])
+    assert scrape._parse_tags(row, "Veggie Sausage") == (["vegan"], [])
+    assert scrape._parse_tags(row, "Black Bean Chipotle Burger") == (["vegan"], [])
 
 
 def test_parse_nutrition():

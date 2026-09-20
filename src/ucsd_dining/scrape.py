@@ -121,7 +121,15 @@ def parse_venues(html: str) -> list[Venue]:
     return venues
 
 
-def _parse_tags(row: Node) -> tuple[list[str], list[str]]:
+# A meat word in the item name, without a plant-based word, means a wrong vegan or vegetarian tag.
+_MEAT = re.compile(
+    r"\b(chicken|beef|pork|turkey|bacon|ham|steak|brisket|carnitas|carne asada|pollo|lamb|"
+    r"pepperoni|chorizo|meatballs?|tri tip|tuna|ahi|salmon|steelhead|shrimp|crab|fish)\b"
+)
+_PLANT_BASED = re.compile(r"\b(veggie|vegan|vegetarian|plant|beyond|impossible|meatless|tofu|soy)\b")
+
+
+def _parse_tags(row: Node, name: str) -> tuple[list[str], list[str]]:
     diet: list[str] = []
     allergens: list[str] = []
     for img in row.css("img[title]"):
@@ -137,6 +145,10 @@ def _parse_tags(row: Node) -> tuple[list[str], list[str]]:
         diet = [d for d in diet if d not in ("vegan", "vegetarian")]
     elif {"dairy", "eggs"} & set(allergens):
         diet = [d for d in diet if d != "vegan"]
+    # HDH also marks some meat items as vegan, for example "Blackened Chicken".
+    lowered = name.lower()
+    if _MEAT.search(lowered) and not _PLANT_BASED.search(lowered):
+        diet = [d for d in diet if d not in ("vegan", "vegetarian")]
     return diet, allergens
 
 
@@ -172,7 +184,7 @@ def parse_day_menu(html: str) -> DayMenu:
                         continue
                     cals = re.search(r"\d+", _text(row.css_first("span.cals")))
                     price = re.search(r"\d+(\.\d+)?", _text(row.css_first("span.item-price")))
-                    diet, allergens = _parse_tags(row)
+                    diet, allergens = _parse_tags(row, _text(link))
                     servings.append(
                         Serving(
                             item_id=int(item_id),
