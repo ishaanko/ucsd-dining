@@ -1,6 +1,6 @@
 # ucsd-dining
 
-Ask Claude (or any MCP client) what's good to eat at UCSD dining halls.
+Ask Claude or ChatGPT what's good to eat at UCSD dining halls.
 
 ## What it can answer
 
@@ -11,16 +11,41 @@ Ask Claude (or any MCP client) what's good to eat at UCSD dining halls.
 
 Covers all 9 HDH dining halls for today and the next 6 days: menus, prices, nutrition, allergens, hours, and walking times.
 
-## Setup
+## Put it online
 
-- Install [uv](https://docs.astral.sh/uv/).
-- Clone this repo and run `uv sync`.
-- Add it to Claude Code:
+Claude and ChatGPT reach it through a URL, so host your own copy on Vercel (free).
+
+- Install [uv](https://docs.astral.sh/uv/) and the [Vercel CLI](https://vercel.com/docs/cli), then clone this repo.
+- Preload this week's menus (about a minute):
   ```sh
-  claude mcp add ucsd-dining -- uv run --directory /path/to/ucsd-dining ucsd-dining
+  UCSD_DINING_DB=api/seed.db uv run ucsd-dining --refresh
   ```
-- For Claude Desktop or Cursor, add the same command to your MCP config.
-- Optional: `uv run ucsd-dining --refresh` preloads the whole week (about a minute), so first answers are fast.
+- Create the project and pick a password (any long random string):
+  ```sh
+  vercel link
+  vercel env add MCP_SECRET production
+  vercel deploy --prod
+  ```
+- Your URL is `https://<your-project>.vercel.app/<password>/mcp`. Keep it private.
+- Rerun the preload and deploy steps about once a month.
+
+## Add it to Claude
+
+- Go to Customize > Connectors, click +, then Add custom connector.
+- Paste your URL. Leave authentication empty.
+
+## Add it to ChatGPT
+
+- Needs Plus or higher. Go to Settings > Apps & Connectors > Advanced settings and turn on Developer mode.
+- Back in Apps & Connectors, click Create, paste your URL, and choose no authentication.
+
+## Claude Code
+
+No hosting needed:
+
+```sh
+claude mcp add ucsd-dining -- uv run --directory /path/to/ucsd-dining ucsd-dining
+```
 
 ## Adapt it for another college
 

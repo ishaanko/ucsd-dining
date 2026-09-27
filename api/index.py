@@ -6,8 +6,7 @@ seed.db (a copy of a full cache) gives each new instance the nutrition data, so 
 cold start fetches only the menu pages of the requested day. Refresh it monthly:
 nutrition older than 30 days is refetched, which can exceed the 60 second limit.
 
-    uv run ucsd-dining --refresh && cp ~/.cache/ucsd-dining/dining.db api/seed.db
-    openssl rand -hex 24 | vercel env add MCP_SECRET production   # first deploy only
+    UCSD_DINING_DB=api/seed.db uv run ucsd-dining --refresh
     vercel deploy --prod
 """
 
@@ -22,9 +21,10 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
 DB = Path("/tmp/dining.db")
+SEED = HERE / "seed.db"
 os.environ["UCSD_DINING_DB"] = str(DB)
-if not DB.exists():
-    shutil.copy(HERE / "seed.db", DB)
+if not DB.exists() and SEED.exists():
+    shutil.copy(SEED, DB)
 
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
 from starlette.responses import PlainTextResponse  # noqa: E402
