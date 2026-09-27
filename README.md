@@ -39,13 +39,29 @@ Claude and ChatGPT reach it through a URL, so host your own copy on Vercel (free
 - Needs Plus or higher. Go to Settings > Apps & Connectors > Advanced settings and turn on Developer mode.
 - Back in Apps & Connectors, click Create, paste your URL, and choose no authentication.
 
-## Claude Code
+## Claude Code, Codex, or Cursor
 
-No hosting needed:
+No hosting needed. Clone the repo, then:
 
-```sh
-claude mcp add ucsd-dining -- uv run --directory /path/to/ucsd-dining ucsd-dining
-```
+- Claude Code:
+  ```sh
+  claude mcp add ucsd-dining -- uv run --directory /path/to/ucsd-dining ucsd-dining
+  ```
+- Codex:
+  ```sh
+  codex mcp add ucsd-dining -- uv run --directory /path/to/ucsd-dining ucsd-dining
+  ```
+- Cursor: add this to `~/.cursor/mcp.json`:
+  ```json
+  {
+    "mcpServers": {
+      "ucsd-dining": {
+        "command": "uv",
+        "args": ["run", "--directory", "/path/to/ucsd-dining", "ucsd-dining"]
+      }
+    }
+  }
+  ```
 
 ## Adapt it for another college
 
