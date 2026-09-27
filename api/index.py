@@ -3,7 +3,12 @@
 The secret path is the only access control, so keep the URL private.
 Vercel functions can write only to /tmp, and /tmp is lost when an instance stops.
 seed.db (a copy of a full cache) gives each new instance the nutrition data, so a
-cold start fetches only the menu pages of the requested day.
+cold start fetches only the menu pages of the requested day. Refresh it monthly:
+nutrition older than 30 days is refetched, which can exceed the 60 second limit.
+
+    uv run ucsd-dining --refresh && cp ~/.cache/ucsd-dining/dining.db api/seed.db
+    openssl rand -hex 24 | vercel env add MCP_SECRET production   # first deploy only
+    vercel deploy --prod
 """
 
 import hmac

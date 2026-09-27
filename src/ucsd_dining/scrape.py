@@ -1,7 +1,4 @@
-"""Fetch and parse the public HDH dining pages (hdh-web.ucsd.edu).
-
-The parse_* functions are pure (HTML in, dataclasses out). The fetch_* functions add HTTP.
-"""
+"""Fetch and parse the public HDH dining pages. parse_* functions are pure; fetch_* add HTTP."""
 
 import logging
 import re
@@ -15,12 +12,12 @@ from selectolax.parser import HTMLParser, Node
 BASE = "https://hdh-web.ucsd.edu/dining/apps/diningservices/"
 USER_AGENT = "ucsd-dining-mcp/0.1 (student project; cached, low request rate)"
 
-# The MCP SDK sets logging to INFO. One log line per request is too much.
+# The MCP SDK sets logging to INFO, which would log every request.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 DIET_TAGS = {"vegan", "vegetarian", "wellness", "sustainability"}
 
-# HDH does not publish where a venue is. Keyed by locId. Used for queries such as "near Muir".
+# HDH does not publish venue locations. Keyed by locId.
 AREAS = {
     "64": "Revelle College",
     "01": "Muir College",
@@ -33,7 +30,7 @@ AREAS = {
     "15": "School of Medicine",
 }
 
-# Nutrition table label -> Item field name.
+# Nutrition table label -> items column.
 NUTRIENTS = {
     "total fat": "fat_g",
     "sat. fat": "sat_fat_g",
@@ -121,7 +118,7 @@ def parse_venues(html: str) -> list[Venue]:
     return venues
 
 
-# A meat word in the item name, without a plant-based word, means a wrong vegan or vegetarian tag.
+# HDH tags some meat items as vegan ("Blackened Chicken"). A meat word in the name wins over the tag.
 _MEAT = re.compile(
     r"\b(chicken|beef|pork|turkey|bacon|ham|steak|brisket|carnitas|carne asada|pollo|lamb|"
     r"pepperoni|chorizo|meatballs?|tri tip|tuna|ahi|salmon|steelhead|shrimp|crab|fish)\b"
@@ -139,13 +136,11 @@ def _parse_tags(row: Node, name: str) -> tuple[list[str], list[str]]:
         elif title.startswith("contains "):
             allergen = title.removeprefix("contains ")
             allergens.append("tree nuts" if allergen == "treenuts" else allergen)
-    # HDH data has errors, for example a seared ahi salad marked vegan.
     # When a diet tag and an allergen tag disagree, trust the allergen tag.
     if {"fish", "shellfish"} & set(allergens):
         diet = [d for d in diet if d not in ("vegan", "vegetarian")]
     elif {"dairy", "eggs"} & set(allergens):
         diet = [d for d in diet if d != "vegan"]
-    # HDH also marks some meat items as vegan, for example "Blackened Chicken".
     lowered = name.lower()
     if _MEAT.search(lowered) and not _PLANT_BASED.search(lowered):
         diet = [d for d in diet if d not in ("vegan", "vegetarian")]
@@ -228,9 +223,7 @@ def parse_nutrition(html: str) -> Nutrition:
 
 
 def client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True
-    )
+    return httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True)
 
 
 async def _get(http: httpx.AsyncClient, url: str) -> str:

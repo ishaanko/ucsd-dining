@@ -1,4 +1,4 @@
-"""SQLite cache of HDH menus. Refreshes itself from the HDH site when data is stale."""
+"""SQLite cache of HDH menus and walking times. Refreshes stale menus from the HDH site."""
 
 import asyncio
 import json
@@ -36,6 +36,10 @@ CREATE INDEX IF NOT EXISTS servings_by_date ON servings (date, venue_id);
 CREATE TABLE IF NOT EXISTS fetched_days (
     venue_id TEXT, date TEXT, fetched_at TEXT, PRIMARY KEY (venue_id, date)
 );
+CREATE TABLE IF NOT EXISTS places (query TEXT PRIMARY KEY, lat REAL, lon REAL, label TEXT);
+CREATE TABLE IF NOT EXISTS walks (
+    origin TEXT, venue_id TEXT, minutes REAL, meters REAL, PRIMARY KEY (origin, venue_id)
+);
 """
 
 _refresh_lock = asyncio.Lock()
@@ -43,6 +47,10 @@ _refresh_lock = asyncio.Lock()
 
 def today() -> date:
     return datetime.now(PACIFIC).date()
+
+
+def week() -> list[date]:
+    return [today() + timedelta(days=n) for n in range(DAYS_AHEAD + 1)]
 
 
 def connect() -> sqlite3.Connection:
@@ -75,8 +83,15 @@ def _save_day(db: sqlite3.Connection, venue_id: str, menu: scrape.DayMenu) -> No
                        description = excluded.description, calories = excluded.calories,
                        diet = excluded.diet, allergens = excluded.allergens,
                        nutrition_url = excluded.nutrition_url""",
-                (s.item_id, s.name, s.description, s.calories,
-                 json.dumps(s.diet), json.dumps(s.allergens), s.nutrition_url),
+                (
+                    s.item_id,
+                    s.name,
+                    s.description,
+                    s.calories,
+                    json.dumps(s.diet),
+                    json.dumps(s.allergens),
+                    s.nutrition_url,
+                ),
             )
         db.execute(
             "INSERT OR REPLACE INTO fetched_days VALUES (?, ?, ?)",
@@ -88,9 +103,15 @@ def _save_nutrition(db: sqlite3.Connection, item_id: int, n: scrape.Nutrition) -
     sets = ", ".join(f"{c} = ?" for c in NUTRIENT_COLUMNS)
     with db:
         db.execute(
-            f"UPDATE items SET serving_size = ?, ingredients = ?, nutrition_fetched_at = ?, {sets} WHERE id = ?",
-            (n.serving_size, n.ingredients, datetime.now(PACIFIC).isoformat(),
-             *(n.values.get(c) for c in NUTRIENT_COLUMNS), item_id),
+            f"""UPDATE items SET serving_size = ?, ingredients = ?, nutrition_fetched_at = ?, {sets}
+                WHERE id = ?""",
+            (
+                n.serving_size,
+                n.ingredients,
+                datetime.now(PACIFIC).isoformat(),
+                *(n.values.get(c) for c in NUTRIENT_COLUMNS),
+                item_id,
+            ),
         )
 
 
@@ -106,17 +127,16 @@ async def ensure_fresh(db: sqlite3.Connection, days: list[date], force: bool = F
         if not days:
             return
         fetched = {
-            (r["venue_id"], r["date"]): r["fetched_at"]
-            for r in db.execute("SELECT * FROM fetched_days")
+            (r["venue_id"], r["date"]): r["fetched_at"] for r in db.execute("SELECT * FROM fetched_days")
         }
         gate = asyncio.Semaphore(CONCURRENCY)
+        venues = db.execute("SELECT id, url FROM venues").fetchall()
+
+        def stale(venue: sqlite3.Row, day: date) -> bool:
+            return force or _is_stale(fetched.get((venue["id"], day.isoformat())), MENU_MAX_AGE)
 
         async with scrape.client() as http:
-            venues = db.execute("SELECT id, url FROM venues").fetchall()
-            def stale(venue: sqlite3.Row, day: date) -> bool:
-                return force or _is_stale(fetched.get((venue["id"], day.isoformat())), MENU_MAX_AGE)
-
-            # The venue index (names, hours) refreshes together with any menu refresh.
+            # Venue names and hours refresh together with any menu refresh.
             if not venues or any(stale(v, d) for v in venues for d in days):
                 try:
                     scraped = await scrape.fetch_venues(http)
@@ -139,12 +159,7 @@ async def ensure_fresh(db: sqlite3.Connection, days: list[date], force: bool = F
                 # The page shows its own date. Trust it over day arithmetic.
                 _save_day(db, venue["id"], menu)
 
-            await asyncio.gather(*(
-                load_day(v, d)
-                for v in venues
-                for d in days
-                if stale(v, d)
-            ))
+            await asyncio.gather(*(load_day(v, d) for v in venues for d in days if stale(v, d)))
 
             async def load_nutrition(item: sqlite3.Row) -> None:
                 async with gate:
@@ -160,12 +175,5 @@ async def ensure_fresh(db: sqlite3.Connection, days: list[date], force: bool = F
                     WHERE s.date IN ({", ".join("?" for _ in days)})""",
                 [d.isoformat() for d in days],
             ).fetchall()
-            await asyncio.gather(*(
-                load_nutrition(i)
-                for i in wanted
-                if _is_stale(i["nutrition_fetched_at"], NUTRITION_MAX_AGE)
-            ))
-
-
-def week() -> list[date]:
-    return [today() + timedelta(days=n) for n in range(DAYS_AHEAD + 1)]
+            stale_items = [i for i in wanted if _is_stale(i["nutrition_fetched_at"], NUTRITION_MAX_AGE)]
+            await asyncio.gather(*(load_nutrition(i) for i in stale_items))

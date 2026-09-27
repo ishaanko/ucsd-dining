@@ -28,9 +28,7 @@ Diet = Literal["vegan", "vegetarian"]
 Allergen = Literal[
     "dairy", "eggs", "fish", "gluten", "peanuts", "sesame", "shellfish", "soy", "tree nuts", "wheat"
 ]
-SortBy = Literal[
-    "protein", "calories", "price", "protein_per_dollar", "protein_per_calorie", "walk_time"
-]
+SortBy = Literal["protein", "calories", "price", "protein_per_dollar", "protein_per_calorie", "walk_time"]
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
@@ -59,7 +57,7 @@ def _find_venues(db: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
     needle = query.strip().lower()
     found = [v for v in venues if needle in v["name"].lower() or needle in (v["area"] or "").lower()]
     if not found:
-        names = ", ".join(f'{v["name"]} ({v["area"]})' for v in venues)
+        names = ", ".join(f"{v['name']} ({v['area']})" for v in venues)
         raise ToolError(f'No venue matches "{query}". Venues: {names}')
     return found
 
@@ -74,14 +72,15 @@ def _minutes_until_close(hours: str, now: datetime) -> int | None:
     return (end.hour - now.hour) * 60 + end.minute - now.minute
 
 
-async def _walks(db: sqlite3.Connection, near: str | None) -> tuple[geo.Place, dict[str, geo.Walk]] | None:
+async def _walks(db: sqlite3.Connection, near: str | None) -> tuple[str | None, dict[str, geo.Walk]]:
+    """The matched place label and the walk to each venue. (None, {}) when near is not given."""
     if not near:
-        return None
+        return None, {}
     try:
         place = await geo.locate(db, near)
     except geo.PlaceNotFound as error:
         raise ToolError(str(error)) from None
-    return place, await geo.walks_from(db, place)
+    return place.label, await geo.walks_from(db, place)
 
 
 def _load(db: sqlite3.Connection, day: date, venue_ids: list[str] | None, meal: str | None) -> list[dict]:
@@ -103,6 +102,11 @@ def _load(db: sqlite3.Connection, day: date, venue_ids: list[str] | None, meal: 
     return rows
 
 
+def _diets(row: dict) -> list[str]:
+    """Only vegan and vegetarian are shown. HDH's wellness and sustainability tags are noise."""
+    return [d for d in row["diet"] if d in ("vegan", "vegetarian")]
+
+
 def _brief(row: dict) -> dict:
     """Short item form for lists. Empty fields are left out to save tokens."""
     out = {
@@ -113,7 +117,7 @@ def _brief(row: dict) -> dict:
         "protein_g": row["protein_g"],
         "carbs_g": row["carbs_g"],
         "fat_g": row["fat_g"],
-        "diet": [d for d in row["diet"] if d in ("vegan", "vegetarian")],
+        "diet": _diets(row),
         "allergens": row["allergens"],
     }
     out = {k: v for k, v in out.items() if v not in (None, [])}
@@ -131,18 +135,18 @@ def _macros_disagree(row: dict) -> bool:
 
 
 def _line(row: dict) -> str:
-    """One-line item form for full menus. About 5 times smaller than the dict form."""
+    """One-line item form for full menus. About 5 times smaller than the dict form in tokens."""
     parts = [row["name"]]
     if row["price"] is not None:
-        parts.append(f'${row["price"]:.2f}')
+        parts.append(f"${row['price']:.2f}")
     if row["calories"] is not None:
-        parts.append(f'{row["calories"]} cal')
+        parts.append(f"{row['calories']} cal")
     if row["protein_g"] is not None:
-        parts.append(f'{row["protein_g"]:g}g protein')
-    parts += [d for d in row["diet"] if d in ("vegan", "vegetarian")]
+        parts.append(f"{row['protein_g']:g}g protein")
+    parts += _diets(row)
     if row["allergens"]:
         parts.append("contains " + ", ".join(row["allergens"]))
-    return " | ".join(parts) + f' | id {row["id"]}'
+    return " | ".join(parts) + f" | id {row['id']}"
 
 
 def _no_menu_note(day: date) -> str:
@@ -167,12 +171,10 @@ async def list_venues(date: str = "today", near: str | None = None) -> list[dict
     day = _parse_date(date)
     db = store.connect()
     await store.ensure_fresh(db, [day])
-    walks = await _walks(db, near)
+    near_matched, walks = await _walks(db, near)
     now = datetime.now(store.PACIFIC)
     meals: dict[str, list[str]] = {}
-    for row in db.execute(
-        "SELECT DISTINCT venue_id, meal FROM servings WHERE date = ?", (day.isoformat(),)
-    ):
+    for row in db.execute("SELECT DISTINCT venue_id, meal FROM servings WHERE date = ?", (day.isoformat(),)):
         meals.setdefault(row["venue_id"], []).append(row["meal"])
     out = []
     for v in db.execute("SELECT * FROM venues ORDER BY name"):
@@ -190,12 +192,11 @@ async def list_venues(date: str = "today", near: str | None = None) -> list[dict
             entry["open_now"] = closes_in is not None
             if closes_in is not None:
                 entry["minutes_until_close"] = closes_in
-        if walks and v["id"] in walks[1]:
-            walk = walks[1][v["id"]]
+        if walk := walks.get(v["id"]):
             entry |= {
                 "walk_minutes": round(walk.minutes),
                 "walk_meters": round(walk.meters),
-                "near_matched": walks[0].label,
+                "near_matched": near_matched,
             }
         out.append(entry)
     if walks:
@@ -264,8 +265,8 @@ async def search_items(
     db = store.connect()
     await store.ensure_fresh(db, [day])
     venue_ids = [v["id"] for v in _find_venues(db, venue)] if venue else None
-    walks = await _walks(db, near)
-    if walks is None and (max_walk_minutes is not None or sort_by == "walk_time"):
+    near_matched, walks = await _walks(db, near)
+    if near_matched is None and (max_walk_minutes is not None or sort_by == "walk_time"):
         raise ToolError('Give "near" (where the user is) to use max_walk_minutes or sort_by "walk_time".')
     words = query.lower().split()
     wanted_diet = {"vegan"} if diet == "vegan" else {"vegan", "vegetarian"}
@@ -273,7 +274,8 @@ async def search_items(
     # One result per item and venue. The same item in lunch and dinner becomes one entry.
     merged: dict[tuple[int, str], dict] = {}
     for row in _load(db, day, venue_ids, meal):
-        text = f'{row["name"]} {row["description"]}'.lower()
+        text = f"{row['name']} {row['description']}".lower()
+        walk = walks.get(row["venue_id"])
         if (
             not all(w in text for w in words)
             or (diet and not wanted_diet & set(row["diet"]))
@@ -281,15 +283,15 @@ async def search_items(
             or (max_calories is not None and (row["calories"] is None or row["calories"] > max_calories))
             or (min_protein_g is not None and (row["protein_g"] or 0) < min_protein_g)
             or (max_price is not None and (row["price"] is None or row["price"] > max_price))
-            or (max_walk_minutes is not None and walks and walks[1][row["venue_id"]].minutes > max_walk_minutes)
+            or (max_walk_minutes is not None and (walk is None or walk.minutes > max_walk_minutes))
         ):
             continue
         entry = merged.setdefault(
             (row["id"], row["venue"]),
             _brief(row) | {"venue": row["venue"], "station": row["station"], "meals": []},
         )
-        if walks:
-            entry["walk_minutes"] = round(walks[1][row["venue_id"]].minutes)
+        if walk:
+            entry["walk_minutes"] = round(walk.minutes)
         if row["meal"] not in entry["meals"]:
             entry["meals"].append(row["meal"])
 
@@ -297,7 +299,7 @@ async def search_items(
         protein = item.get("protein_g", 0)
         match sort_by:
             case "walk_time":
-                return item["walk_minutes"] - protein / 1000  # protein breaks ties
+                return item.get("walk_minutes", float("inf")) - protein / 1000  # protein breaks ties
             case "calories":
                 return item.get("calories", float("inf"))
             case "price":
@@ -311,8 +313,8 @@ async def search_items(
 
     results = sorted(merged.values(), key=rank)
     out: dict = {"date": day.isoformat(), "total_matches": len(results), "items": results[:limit]}
-    if walks:
-        out["near_matched"] = walks[0].label
+    if near_matched:
+        out["near_matched"] = near_matched
     if not results and not _load(db, day, venue_ids, meal):
         out["note"] = _no_menu_note(day)
     return out

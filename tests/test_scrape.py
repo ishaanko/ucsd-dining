@@ -61,6 +61,13 @@ def test_parse_nutrition():
     assert nutrition.serving_size == "10.3 oz"
     assert nutrition.ingredients and nutrition.ingredients.startswith("Water, Tap, Pasta")
     assert nutrition.values == {
-        "fat_g": 40.0, "sat_fat_g": 24.8, "trans_fat_g": 0.0, "cholesterol_mg": 144.4,
-        "sodium_mg": 828.9, "carbs_g": 64.2, "fiber_g": 3.9, "sugar_g": 2.8, "protein_g": 14.7,
+        "fat_g": 40.0,
+        "sat_fat_g": 24.8,
+        "trans_fat_g": 0.0,
+        "cholesterol_mg": 144.4,
+        "sodium_mg": 828.9,
+        "carbs_g": 64.2,
+        "fiber_g": 3.9,
+        "sugar_g": 2.8,
+        "protein_g": 14.7,
     }

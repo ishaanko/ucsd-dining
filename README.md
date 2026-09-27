@@ -1,96 +1,37 @@
 # ucsd-dining
 
-UCSD dining hall menus and walking times for Claude and other AI assistants. An MCP server.
+Ask Claude (or any MCP client) what's good to eat at UCSD dining halls.
 
-The data comes from the public HDH pages at hdh-web.ucsd.edu. This project is not an official UCSD product.
+## What it can answer
 
-## What it does
+- "High protein vegan dinner near Geisel?"
+- "What's at Pines for lunch tomorrow?"
+- "Anything without dairy under 600 calories?"
+- "Which dining halls are open now, and can I get there before they close?"
 
-- Reads the menus of all 9 HDH restaurants for today and the next 6 days.
-- Reads the nutrition page of each item: macros, serving size, ingredients.
-- Keeps all data in a local SQLite cache. Menus refresh after 6 hours. Nutrition refreshes after 30 days.
-- Finds a campus place by name and gives real walking times from it to each venue.
-- Gives 4 MCP tools to the assistant.
+Covers all 9 HDH dining halls for today and the next 6 days: menus, prices, nutrition, allergens, hours, and walking times.
 
-| Tool | Use |
-| --- | --- |
-| `search_items` | Find items in all venues. Filters: words, venue, date, meal, diet, allergens to exclude, calories, protein, price, walking time. Sort by protein, calories, price, protein per dollar, protein per calorie, walking time. |
-| `list_venues` | Venues, campus area, hours, open now, minutes until close, meals served, walking time and distance. |
-| `get_menu` | Full menu of one venue, one line per item. |
-| `get_item` | Full nutrition, ingredients, and the schedule of one item. |
+## Setup
 
-Venue names accept a partial name or a campus area. "muir" finds Pines. Dates accept "today", "tomorrow", a weekday name, or YYYY-MM-DD.
+- Install [uv](https://docs.astral.sh/uv/).
+- Clone this repo and run `uv sync`.
+- Add it to Claude Code:
+  ```sh
+  claude mcp add ucsd-dining -- uv run --directory /path/to/ucsd-dining ucsd-dining
+  ```
+- For Claude Desktop or Cursor, add the same command to your MCP config.
+- Optional: `uv run ucsd-dining --refresh` preloads the whole week (about a minute), so first answers are fast.
 
-## Walking times
+## Adapt it for another college
 
-`list_venues` and `search_items` accept `near`: a campus place name ("Geisel Library", "Warren Lecture Hall", "muir") or "lat,lon". Nominatim (OpenStreetMap) finds the place inside the campus box. OSRM with the foot profile gives the path time and distance to all venues in one request. Both results are cached in SQLite. If OSRM fails, the server estimates from the straight-line distance. The `near_matched` field shows which place was found.
+- `scrape.py`: point `BASE` at your dining site and rewrite the `parse_*` functions for its pages. This is the main work.
+- `scrape.py`: fill `AREAS` with where each dining hall is on campus.
+- `geo.py`: set `CAMPUS_BOX` to your campus bounds and `VENUE_COORDS` to each hall's location (from OpenStreetMap).
+- `server.py`: update `INSTRUCTIONS` and the tool descriptions with your school and hall names.
+- Save a few real pages to `tests/fixtures` and update the tests.
 
-## Install
+## Good to know
 
-```sh
-uv sync
-uv run ucsd-dining --refresh   # optional. Fetches 7 days in about 75 seconds.
-```
-
-Without `--refresh`, the first query for a date fetches that date. This takes about 40 seconds with an empty cache.
-
-## Connect to an assistant
-
-Claude Code:
-
-```sh
-claude mcp add ucsd-dining -- uv run --directory /path/to/food ucsd-dining
-```
-
-Claude Desktop, Cursor, and other stdio clients:
-
-```json
-{
-  "mcpServers": {
-    "ucsd-dining": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/food", "ucsd-dining"]
-    }
-  }
-}
-```
-
-Remote clients (streamable HTTP, endpoint `/mcp`):
-
-```sh
-uv run ucsd-dining --http --host 0.0.0.0 --port 8000
-```
-
-The HTTP mode is tested on localhost only. Put it behind HTTPS before you add it to claude.ai as a custom connector.
-
-## Deploy to Vercel
-
-`api/index.py` serves the MCP server at `/<MCP_SECRET>/mcp`. All other paths give 404. The secret path is the only access control, so keep the URL private.
-
-```sh
-cp ~/.cache/ucsd-dining/dining.db api/seed.db   # after `ucsd-dining --refresh`
-openssl rand -hex 24 | vercel env add MCP_SECRET production
-vercel deploy --prod
-```
-
-Vercel instances lose `/tmp` when they stop. `api/seed.db` gives each new instance the nutrition data, so a cold start fetches only the menu pages. Make a new seed and deploy again each month. If the seed is older than 30 days, a cold start tries to fetch all nutrition pages and can exceed the 60 second limit.
-
-## Data notes
-
-- HDH data has errors. When an item has a vegan or vegetarian tag and also a fish, shellfish, dairy, or egg allergen tag, the diet tag is removed. The diet tag is also removed when the item name has a meat word ("Blackened Chicken") and no plant-based word ("Beyond Beef", "Veggie Sausage"). When the macros of an item do not agree with its calories, the item gets a `warning` field.
-- Allergen tags can be incomplete. For a serious allergy, confirm with dining staff.
-- Campus areas and venue coordinates are not on the HDH site. They are small tables in `scrape.py` and `geo.py`. The coordinates come from OpenStreetMap.
-- The scraper sends a maximum of 6 requests at the same time and identifies itself in the User-Agent.
+- Data comes from the public HDH site. This is not an official UCSD project.
+- HDH allergen tags can be incomplete. For a serious allergy, check with dining staff.
 - Markets and cafes are not included.
-
-## Configuration
-
-`UCSD_DINING_DB` sets the cache path. The default is `~/.cache/ucsd-dining/dining.db`.
-
-## Tests
-
-```sh
-uv run pytest
-```
-
-The parser tests use trimmed copies of real HDH pages in `tests/fixtures`.

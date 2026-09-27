@@ -1,8 +1,4 @@
-"""Campus place lookup and walking times. Uses OpenStreetMap services, cached in SQLite.
-
-Nominatim finds a place name inside the UCSD campus box. OSRM (foot profile) gives real
-path times from that place to all venues in one request.
-"""
+"""Campus place lookup (Nominatim) and walking times to each venue (OSRM foot profile)."""
 
 import math
 import re
@@ -30,13 +26,6 @@ VENUE_COORDS = {
     "15": (32.875411, -117.235000),
 }
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS places (query TEXT PRIMARY KEY, lat REAL, lon REAL, label TEXT);
-CREATE TABLE IF NOT EXISTS walks (
-    origin TEXT, venue_id TEXT, minutes REAL, meters REAL, PRIMARY KEY (origin, venue_id)
-);
-"""
-
 
 class PlaceNotFound(Exception):
     pass
@@ -61,22 +50,21 @@ async def locate(db: sqlite3.Connection, query: str) -> Place:
     if coords:
         return Place(float(coords.group(1)), float(coords.group(2)), "given coordinates")
 
-    db.executescript(SCHEMA)
     key = " ".join(query.lower().split())
     row = db.execute("SELECT * FROM places WHERE query = ?", (key,)).fetchone()
     if row:
         return Place(row["lat"], row["lon"], row["label"])
 
-    async with scrape.client() as http:
-        try:
+    try:
+        async with scrape.client() as http:
             response = await http.get(
                 NOMINATIM,
                 params={"q": key, "format": "jsonv2", "limit": 1, "bounded": 1, "viewbox": CAMPUS_BOX},
             )
             response.raise_for_status()
             results = response.json()
-        except httpx.HTTPError as error:
-            raise PlaceNotFound(f"The place lookup service failed ({error}). Give near as \"lat,lon\".") from None
+    except httpx.HTTPError as error:
+        raise PlaceNotFound(f'The place lookup service failed ({error}). Give near as "lat,lon".') from None
     if not results:
         raise PlaceNotFound(
             f'No place "{query}" on the UCSD campus. Use a building, library, or college name '
@@ -100,7 +88,6 @@ def _estimate(place: Place, lat: float, lon: float) -> Walk:
 
 async def walks_from(db: sqlite3.Connection, place: Place) -> dict[str, Walk]:
     """Walking time and distance from a place to each venue, keyed by venue id."""
-    db.executescript(SCHEMA)
     origin = f"{place.lat:.4f},{place.lon:.4f}"  # about 11 m precision
     cached = db.execute("SELECT * FROM walks WHERE origin = ?", (origin,)).fetchall()
     if len(cached) == len(VENUE_COORDS):
